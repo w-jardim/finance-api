@@ -9,8 +9,20 @@ const app = express();
 app.use(express.json());
 
 // CORS corporativo: permitir apenas o frontend DEV
-const allowedOrigins = new Set(["https://finance-dev.gardenwjs.tech"]);
+//const allowedOrigins = new Set(["https://finance-dev.gardenwjs.tech"]);
+const isProd = process.env.NODE_ENV === "production";
 
+// Em PROD: só virazul (e www se usar).
+// Em DEV: permite web dev online + localhost do Vite.
+const allowedOrigins = new Set(
+  isProd
+    ? ["https://virazul.com", "https://www.virazul.com"]
+    : [
+        "https://finance-dev.gardenwjs.tech",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+      ]
+);
 app.use(
   cors({
     origin: (origin, cb) => {
