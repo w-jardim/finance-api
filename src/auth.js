@@ -7,8 +7,19 @@ function autenticar(req, res, next) {
   if (!token) return res.status(401).json({ erro: "token_ausente" });
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.usuario = { id: payload.sub, email: payload.email };
+    const secret = process.env.JWT_SECRET;
+    if (!secret) return res.status(500).json({ erro: "jwt_secret_nao_configurado" });
+
+    const payload = jwt.verify(token, secret);
+
+    // subject (sub) deve ser ID numérico (BIGINT). Token antigo (UUID) vira NaN e é rejeitado.
+    const userId = Number(payload.sub);
+
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      return res.status(401).json({ erro: "token_invalido_userid" });
+    }
+
+    req.usuario = { id: userId, email: payload.email || null };
     return next();
   } catch {
     return res.status(401).json({ erro: "token_invalido" });

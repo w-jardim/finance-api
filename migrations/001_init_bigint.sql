@@ -1,7 +1,3 @@
--- 001_init_bigint.sql
--- Initialize schema using BIGINT primary keys (short numeric ids)
--- WARNING: this replaces UUID-based schema; run on a DB you want to recreate.
-
 BEGIN;
 
 -- Usuarios
@@ -57,6 +53,3 @@ CREATE INDEX IF NOT EXISTS idx_categorias_usuario_id ON categorias(usuario_id);
 CREATE INDEX IF NOT EXISTS idx_lancamentos_usuario_data ON lancamentos(usuario_id, data_ocorrencia);
 
 COMMIT;
-
--- Notes:
--- After running this, update application code to use numeric ids (BIGINT) instead of UUID strings.
