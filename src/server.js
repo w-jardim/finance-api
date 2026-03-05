@@ -171,27 +171,38 @@ app.get("/lancamentos", autenticar, async (req, res) => {
 
   const params = [req.usuario.id];
   let sql = `
-    SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, criado_em
-    FROM lancamentos
-    WHERE usuario_id = $1
+    SELECT l.id, l.conta_id, l.categoria_id, l.tipo, l.valor_centavos, l.descricao, l.data_ocorrencia, l.criado_em,
+           c.nome AS conta_nome, cat.nome AS categoria_nome
+    FROM lancamentos l
+    LEFT JOIN contas c ON c.id = l.conta_id
+    LEFT JOIN categorias cat ON cat.id = l.categoria_id
+    WHERE l.usuario_id = $1
   `;
 
   if (inicio) {
     params.push(inicio);
-    sql += ` AND data_ocorrencia >= $${params.length}`;
+    sql += ` AND l.data_ocorrencia >= $${params.length}`;
   }
   if (fim) {
     params.push(fim);
-    sql += ` AND data_ocorrencia <= $${params.length}`;
+    sql += ` AND l.data_ocorrencia <= $${params.length}`;
   }
 
-  sql += " ORDER BY data_ocorrencia DESC, criado_em DESC";
+  sql += " ORDER BY l.data_ocorrencia DESC, l.criado_em DESC";
 
   const r = await db.query(sql, params);
 
   const lancamentos = r.rows.map((l) => ({
-    ...l,
+    id: l.id,
+    conta_id: l.conta_id,
+    categoria_id: l.categoria_id,
+    tipo: l.tipo,
     valor_centavos: Number(l.valor_centavos),
+    descricao: l.descricao,
+    data_ocorrencia: l.data_ocorrencia,
+    criado_em: l.criado_em,
+    conta: l.conta_nome ? { nome: l.conta_nome } : null,
+    categoria: l.categoria_nome ? { nome: l.categoria_nome } : null,
   }));
 
   return res.json({ lancamentos });
@@ -222,7 +233,7 @@ app.post("/lancamentos", autenticar, async (req, res) => {
   const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia } = req.body || {};
 
   if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
-  if (!tipo || !["entrada", "saida"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
+  if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
   if (!Number.isInteger(valor_centavos) || valor_centavos <= 0) return res.status(400).json({ erro: "valor_centavos_invalido" });
   if (!data_ocorrencia) return res.status(400).json({ erro: "data_ocorrencia_obrigatoria" });
 
@@ -339,7 +350,7 @@ app.put("/lancamentos/:id", autenticar, async (req, res) => {
   const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia } = req.body || {};
 
   if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
-  if (!tipo || !["entrada", "saida"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
+  if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
   if (!Number.isInteger(valor_centavos) || valor_centavos <= 0) return res.status(400).json({ erro: "valor_centavos_invalido" });
   if (!data_ocorrencia) return res.status(400).json({ erro: "data_ocorrencia_obrigatoria" });
 
