@@ -8,16 +8,13 @@ const { autenticar } = require("./auth");
 const app = express();
 app.use(express.json());
 
-// CORS corporativo: permitir apenas o frontend DEV
-//const allowedOrigins = new Set(["https://finance-dev.gardenwjs.tech"]);
-const isProd = process.env.NODE_ENV === "production";
-
-// Em PROD: só virazul (e www se usar).
-// Em DEV: permite web dev online + localhost do Vite.
+// CORS: use ALLOWED_ORIGINS env var (comma-separated) or defaults
 const allowedOrigins = new Set(
-  isProd
-    ? ["https://virazul.com", "https://www.virazul.com"]
+  process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
     : [
+        "https://virazul.com",
+        "https://www.virazul.com",
         "https://finance-dev.gardenwjs.tech",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -73,7 +70,7 @@ app.post("/auth/login", async (req, res) => {
   const secret = process.env.JWT_SECRET;
   if (!secret) return res.status(500).json({ erro: "jwt_secret_nao_configurado" });
 
-  const token = jwt.sign({ email: user.email }, secret, { subject: user.id, expiresIn: "7d" });
+  const token = jwt.sign({ email: user.email }, secret, { subject: String(user.id), expiresIn: "7d" });
   return res.status(200).json({ token });
 });
 
@@ -99,6 +96,21 @@ app.post("/contas", autenticar, async (req, res) => {
     [req.usuario.id, String(nome).trim()]
   );
   return res.status(201).json({ conta: r.rows[0] });
+});
+
+// Obter uma conta por id
+app.get("/contas/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      "SELECT id, nome, criado_em FROM contas WHERE id = $1 AND usuario_id = $2",
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ erro: "conta_nao_encontrada" });
+    return res.json({ conta: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
 });
 
 app.get("/categorias", autenticar, async (req, res) => {
@@ -139,6 +151,21 @@ app.post("/categorias", autenticar, async (req, res) => {
   }
 });
 
+// Obter uma categoria por id
+app.get("/categorias/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      "SELECT id, nome, tipo, criado_em FROM categorias WHERE id = $1 AND usuario_id = $2",
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ erro: "categoria_nao_encontrada" });
+    return res.json({ categoria: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
 app.get("/lancamentos", autenticar, async (req, res) => {
   const { inicio, fim } = req.query;
 
@@ -168,6 +195,27 @@ app.get("/lancamentos", autenticar, async (req, res) => {
   }));
 
   return res.json({ lancamentos });
+});
+
+// Obter um lancamento por id
+app.get("/lancamentos/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      `SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, criado_em
+       FROM lancamentos WHERE id = $1 AND usuario_id = $2`,
+      [id, req.usuario.id]
+    );
+
+    if (r.rowCount === 0) return res.status(404).json({ erro: "lancamento_nao_encontrado" });
+
+    const lancamento = r.rows[0];
+    lancamento.valor_centavos = Number(lancamento.valor_centavos);
+
+    return res.json({ lancamento });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
 });
 
 app.post("/lancamentos", autenticar, async (req, res) => {
@@ -211,6 +259,127 @@ app.post("/lancamentos", autenticar, async (req, res) => {
   lancamento.valor_centavos = Number(lancamento.valor_centavos);
 
   return res.status(201).json({ lancamento });
+});
+
+// Atualizar conta
+app.put("/contas/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  const { nome } = req.body || {};
+
+  if (!nome || !String(nome).trim()) return res.status(400).json({ erro: "nome_obrigatorio" });
+
+  try {
+    const r = await db.query(
+      "UPDATE contas SET nome = $1 WHERE id = $2 AND usuario_id = $3 RETURNING id, nome, criado_em",
+      [String(nome).trim(), id, req.usuario.id]
+    );
+
+    if (r.rowCount === 0) return res.status(403).json({ erro: "conta_nao_permitida" });
+
+    return res.json({ conta: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Deletar conta
+app.delete("/contas/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query("DELETE FROM contas WHERE id = $1 AND usuario_id = $2 RETURNING id", [id, req.usuario.id]);
+    if (r.rowCount === 0) return res.status(403).json({ erro: "conta_nao_permitida" });
+    return res.status(204).send();
+  } catch (e) {
+    // possível restrição de FK
+    if (String(e).toLowerCase().includes("restrict") || String(e).toLowerCase().includes("violates")) {
+      return res.status(409).json({ erro: "conta_nao_pode_ser_deletada" });
+    }
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Atualizar categoria
+app.put("/categorias/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  const { nome, tipo } = req.body || {};
+
+  if (!nome || !String(nome).trim()) return res.status(400).json({ erro: "nome_obrigatorio" });
+  if (!tipo || !["entrada", "saida"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
+
+  try {
+    const r = await db.query(
+      "UPDATE categorias SET nome = $1, tipo = $2 WHERE id = $3 AND usuario_id = $4 RETURNING id, nome, tipo, criado_em",
+      [String(nome).trim(), tipo, id, req.usuario.id]
+    );
+
+    if (r.rowCount === 0) return res.status(403).json({ erro: "categoria_nao_permitida" });
+
+    return res.json({ categoria: r.rows[0] });
+  } catch (e) {
+    if (String(e).includes("categorias_usuario_id_nome_tipo_key")) return res.status(409).json({ erro: "categoria_duplicada" });
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Deletar categoria
+app.delete("/categorias/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query("DELETE FROM categorias WHERE id = $1 AND usuario_id = $2 RETURNING id", [id, req.usuario.id]);
+    if (r.rowCount === 0) return res.status(403).json({ erro: "categoria_nao_permitida" });
+    return res.status(204).send();
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Atualizar lancamento
+app.put("/lancamentos/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia } = req.body || {};
+
+  if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
+  if (!tipo || !["entrada", "saida"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
+  if (!Number.isInteger(valor_centavos) || valor_centavos <= 0) return res.status(400).json({ erro: "valor_centavos_invalido" });
+  if (!data_ocorrencia) return res.status(400).json({ erro: "data_ocorrencia_obrigatoria" });
+
+  const conta = await db.query("SELECT id FROM contas WHERE id = $1 AND usuario_id = $2", [conta_id, req.usuario.id]);
+  if (conta.rowCount === 0) return res.status(403).json({ erro: "conta_nao_permitida" });
+
+  if (categoria_id) {
+    const cat = await db.query("SELECT id FROM categorias WHERE id = $1 AND usuario_id = $2", [categoria_id, req.usuario.id]);
+    if (cat.rowCount === 0) return res.status(403).json({ erro: "categoria_nao_permitida" });
+  }
+
+  try {
+    const r = await db.query(
+      `UPDATE lancamentos SET conta_id=$1, categoria_id=$2, tipo=$3, valor_centavos=$4, descricao=$5, data_ocorrencia=$6
+       WHERE id = $7 AND usuario_id = $8
+       RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, criado_em`,
+      [conta_id, categoria_id || null, tipo, valor_centavos, descricao || null, data_ocorrencia, id, req.usuario.id]
+    );
+
+    if (r.rowCount === 0) return res.status(403).json({ erro: "lancamento_nao_permitido" });
+
+    const lancamento = r.rows[0];
+    lancamento.valor_centavos = Number(lancamento.valor_centavos);
+
+    return res.json({ lancamento });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Deletar lancamento
+app.delete("/lancamentos/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query("DELETE FROM lancamentos WHERE id = $1 AND usuario_id = $2 RETURNING id", [id, req.usuario.id]);
+    if (r.rowCount === 0) return res.status(403).json({ erro: "lancamento_nao_permitido" });
+    return res.status(204).send();
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
 });
 
 const port = process.env.PORT || 4000;
