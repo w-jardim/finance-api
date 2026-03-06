@@ -393,6 +393,175 @@ app.delete("/lancamentos/:id", autenticar, async (req, res) => {
   }
 });
 
+// ============= RESERVAS =============
+
+// Listar reservas
+app.get("/reservas", autenticar, async (req, res) => {
+  const { status, inicio, fim } = req.query;
+
+  const params = [req.usuario.id];
+  let sql = `
+    SELECT r.id, r.conta_id, r.categoria_id, r.valor_centavos, r.descricao, r.data_alvo, r.status, r.criado_em, r.atualizado_em,
+           c.nome AS conta_nome, cat.nome AS categoria_nome
+    FROM reservas r
+    LEFT JOIN contas c ON c.id = r.conta_id
+    LEFT JOIN categorias cat ON cat.id = r.categoria_id
+    WHERE r.usuario_id = $1
+  `;
+
+  if (status && ["ativa", "utilizada", "cancelada"].includes(status)) {
+    params.push(status);
+    sql += ` AND r.status = $${params.length}`;
+  }
+
+  if (inicio) {
+    params.push(inicio);
+    sql += ` AND r.data_alvo >= $${params.length}`;
+  }
+  if (fim) {
+    params.push(fim);
+    sql += ` AND r.data_alvo <= $${params.length}`;
+  }
+
+  sql += " ORDER BY r.data_alvo DESC, r.criado_em DESC";
+
+  try {
+    const r = await db.query(sql, params);
+
+    const reservas = r.rows.map((res) => ({
+      id: res.id,
+      conta_id: res.conta_id,
+      categoria_id: res.categoria_id,
+      valor_centavos: Number(res.valor_centavos),
+      descricao: res.descricao,
+      data_alvo: res.data_alvo,
+      status: res.status,
+      criado_em: res.criado_em,
+      atualizado_em: res.atualizado_em,
+      conta: res.conta_nome ? { nome: res.conta_nome } : null,
+      categoria: res.categoria_nome ? { nome: res.categoria_nome } : null,
+    }));
+
+    return res.json({ reservas });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Obter uma reserva por id
+app.get("/reservas/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      `SELECT id, conta_id, categoria_id, valor_centavos, descricao, data_alvo, status, criado_em, atualizado_em
+       FROM reservas WHERE id = $1 AND usuario_id = $2`,
+      [id, req.usuario.id]
+    );
+
+    if (r.rowCount === 0) return res.status(404).json({ erro: "reserva_nao_encontrada" });
+
+    const reserva = r.rows[0];
+    reserva.valor_centavos = Number(reserva.valor_centavos);
+
+    return res.json({ reserva });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Criar reserva
+app.post("/reservas", autenticar, async (req, res) => {
+  const { conta_id, categoria_id, valor_centavos, descricao, data_alvo, status } = req.body || {};
+
+  if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
+  if (!Number.isInteger(valor_centavos) || valor_centavos <= 0) return res.status(400).json({ erro: "valor_centavos_invalido" });
+  if (!data_alvo) return res.status(400).json({ erro: "data_alvo_obrigatoria" });
+
+  const statusValor = status || "ativa";
+  if (!["ativa", "utilizada", "cancelada"].includes(statusValor)) {
+    return res.status(400).json({ erro: "status_invalido" });
+  }
+
+  // Verificar se a conta pertence ao usuário
+  const conta = await db.query("SELECT id FROM contas WHERE id = $1 AND usuario_id = $2", [conta_id, req.usuario.id]);
+  if (conta.rowCount === 0) return res.status(403).json({ erro: "conta_nao_permitida" });
+
+  // Verificar categoria se fornecida
+  if (categoria_id) {
+    const cat = await db.query("SELECT id FROM categorias WHERE id = $1 AND usuario_id = $2", [categoria_id, req.usuario.id]);
+    if (cat.rowCount === 0) return res.status(403).json({ erro: "categoria_nao_permitida" });
+  }
+
+  try {
+    const r = await db.query(
+      `INSERT INTO reservas (usuario_id, conta_id, categoria_id, valor_centavos, descricao, data_alvo, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING id, conta_id, categoria_id, valor_centavos, descricao, data_alvo, status, criado_em, atualizado_em`,
+      [req.usuario.id, conta_id, categoria_id || null, valor_centavos, descricao || null, data_alvo, statusValor]
+    );
+
+    const reserva = r.rows[0];
+    reserva.valor_centavos = Number(reserva.valor_centavos);
+
+    return res.status(201).json({ reserva });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Atualizar reserva
+app.put("/reservas/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  const { conta_id, categoria_id, valor_centavos, descricao, data_alvo, status } = req.body || {};
+
+  if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
+  if (!Number.isInteger(valor_centavos) || valor_centavos <= 0) return res.status(400).json({ erro: "valor_centavos_invalido" });
+  if (!data_alvo) return res.status(400).json({ erro: "data_alvo_obrigatoria" });
+  if (!status || !["ativa", "utilizada", "cancelada"].includes(status)) {
+    return res.status(400).json({ erro: "status_invalido" });
+  }
+
+  // Verificar se a conta pertence ao usuário
+  const conta = await db.query("SELECT id FROM contas WHERE id = $1 AND usuario_id = $2", [conta_id, req.usuario.id]);
+  if (conta.rowCount === 0) return res.status(403).json({ erro: "conta_nao_permitida" });
+
+  // Verificar categoria se fornecida
+  if (categoria_id) {
+    const cat = await db.query("SELECT id FROM categorias WHERE id = $1 AND usuario_id = $2", [categoria_id, req.usuario.id]);
+    if (cat.rowCount === 0) return res.status(403).json({ erro: "categoria_nao_permitida" });
+  }
+
+  try {
+    const r = await db.query(
+      `UPDATE reservas SET conta_id=$1, categoria_id=$2, valor_centavos=$3, descricao=$4, data_alvo=$5, status=$6, atualizado_em=NOW()
+       WHERE id = $7 AND usuario_id = $8
+       RETURNING id, conta_id, categoria_id, valor_centavos, descricao, data_alvo, status, criado_em, atualizado_em`,
+      [conta_id, categoria_id || null, valor_centavos, descricao || null, data_alvo, status, id, req.usuario.id]
+    );
+
+    if (r.rowCount === 0) return res.status(403).json({ erro: "reserva_nao_permitida" });
+
+    const reserva = r.rows[0];
+    reserva.valor_centavos = Number(reserva.valor_centavos);
+
+    return res.json({ reserva });
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Deletar reserva
+app.delete("/reservas/:id", autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query("DELETE FROM reservas WHERE id = $1 AND usuario_id = $2 RETURNING id", [id, req.usuario.id]);
+    if (r.rowCount === 0) return res.status(403).json({ erro: "reserva_nao_permitida" });
+    return res.status(204).send();
+  } catch (e) {
+    return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
 const port = process.env.PORT || 4000;
 app.listen(port, "0.0.0.0", () => {
   console.log(`API rodando em http://0.0.0.0:${port}`);
