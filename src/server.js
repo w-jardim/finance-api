@@ -169,12 +169,12 @@ app.get("/categorias/:id", autenticar, async (req, res) => {
 });
 
 app.get("/lancamentos", autenticar, async (req, res) => {
-  const { inicio, fim, tipo } = req.query;
+  const { inicio, fim, tipo, pago } = req.query;
 
   const params = [req.usuario.id];
   let sql = `
-    SELECT l.id, l.conta_id, l.categoria_id, l.tipo, l.valor_centavos, l.descricao, l.data_ocorrencia, l.criado_em,
-           l.origem_lancamento_id, c.nome AS conta_nome, cat.nome AS categoria_nome
+        SELECT l.id, l.conta_id, l.categoria_id, l.tipo, l.valor_centavos, l.descricao, l.data_ocorrencia, l.criado_em,
+          l.origem_lancamento_id, l.pago, c.nome AS conta_nome, cat.nome AS categoria_nome
     FROM lancamentos l
     LEFT JOIN contas c ON c.id = l.conta_id
     LEFT JOIN categorias cat ON cat.id = l.categoria_id
@@ -195,6 +195,12 @@ app.get("/lancamentos", autenticar, async (req, res) => {
     sql += ` AND l.tipo = $${params.length}`;
   }
 
+  if (typeof pago !== 'undefined') {
+    if (pago !== 'true' && pago !== 'false') return res.status(400).json({ erro: 'pago_invalido' });
+    params.push(pago === 'true');
+    sql += ` AND l.pago = $${params.length}`;
+  }
+
   sql += " ORDER BY l.data_ocorrencia DESC, l.criado_em DESC";
 
   const r = await db.query(sql, params);
@@ -209,6 +215,7 @@ app.get("/lancamentos", autenticar, async (req, res) => {
     data_ocorrencia: l.data_ocorrencia,
     criado_em: l.criado_em,
     origem_lancamento_id: l.origem_lancamento_id || null,
+    pago: l.pago === true,
     conta: l.conta_nome ? { nome: l.conta_nome } : null,
     categoria: l.categoria_nome ? { nome: l.categoria_nome } : null,
   }));
@@ -221,7 +228,7 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
   const { id } = req.params;
   try {
     const r = await db.query(
-       `SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, criado_em
+       `SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, criado_em
          FROM lancamentos WHERE id = $1 AND usuario_id = $2`,
       [id, req.usuario.id]
     );
@@ -231,6 +238,9 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
     const lancamento = r.rows[0];
     lancamento.valor_centavos = Number(lancamento.valor_centavos);
 
+    // normalize pago
+    lancamento.pago = lancamento.pago === true;
+
     return res.json({ lancamento });
   } catch (e) {
     return res.status(500).json({ erro: "erro_interno" });
@@ -238,7 +248,7 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
 });
 
 app.post("/lancamentos", autenticar, async (req, res) => {
-  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id } = req.body || {};
+  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago } = req.body || {};
 
   if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
   if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
@@ -268,10 +278,12 @@ app.post("/lancamentos", autenticar, async (req, res) => {
     if (o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
   }
 
+  const pagoVal = typeof pago === 'boolean' ? pago : false;
+
   const r = await db.query(
-    `INSERT INTO lancamentos (usuario_id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-     RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, criado_em`,
+    `INSERT INTO lancamentos (usuario_id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, criado_em`,
     [
       req.usuario.id,
       conta_id,
@@ -281,13 +293,14 @@ app.post("/lancamentos", autenticar, async (req, res) => {
       descricao || null,
       data_ocorrencia,
       origem_lancamento_id || null,
+      pagoVal,
     ]
   );
 
   const lancamento = r.rows[0];
   lancamento.valor_centavos = Number(lancamento.valor_centavos);
   lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
-  lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
+  lancamento.pago = lancamento.pago === true;
 
   return res.status(201).json({ lancamento });
 });
@@ -394,7 +407,7 @@ app.put("/lancamentos/:id", autenticar, async (req, res) => {
     const r = await db.query(
       `UPDATE lancamentos SET conta_id=$1, categoria_id=$2, tipo=$3, valor_centavos=$4, descricao=$5, data_ocorrencia=$6, origem_lancamento_id=$9
        WHERE id = $7 AND usuario_id = $8
-       RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, criado_em`,
+      RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, criado_em`,
       [conta_id, categoria_id || null, tipo, valor_centavos, descricao || null, data_ocorrencia, id, req.usuario.id, origem_lancamento_id || null]
     );
 
@@ -403,6 +416,8 @@ app.put("/lancamentos/:id", autenticar, async (req, res) => {
     const lancamento = r.rows[0];
     lancamento.valor_centavos = Number(lancamento.valor_centavos);
     lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
+
+    lancamento.pago = lancamento.pago === true;
 
     return res.json({ lancamento });
   } catch (e) {
@@ -588,6 +603,36 @@ app.delete("/reservas/:id", autenticar, async (req, res) => {
     return res.status(204).send();
   } catch (e) {
     return res.status(500).json({ erro: "erro_interno" });
+  }
+});
+
+// Marcar lancamento como pago
+app.patch('/lancamentos/:id/pagar', autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      'UPDATE lancamentos SET pago = true WHERE id = $1 AND usuario_id = $2 RETURNING id, pago',
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido' });
+    return res.json({ lancamento: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: 'erro_interno' });
+  }
+});
+
+// Estornar (marcar como nao pago)
+app.patch('/lancamentos/:id/estornar', autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      'UPDATE lancamentos SET pago = false WHERE id = $1 AND usuario_id = $2 RETURNING id, pago',
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido' });
+    return res.json({ lancamento: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: 'erro_interno' });
   }
 });
 
