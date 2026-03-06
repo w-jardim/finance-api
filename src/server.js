@@ -118,7 +118,7 @@ app.get("/contas/:id", autenticar, async (req, res) => {
 app.get("/categorias", autenticar, async (req, res) => {
   const tipo = req.query.tipo;
 
-  if (tipo && !["entrada", "saida"].includes(tipo)) {
+  if (tipo && !["entrada", "saida", "reserva"].includes(tipo)) {
     return res.status(400).json({ erro: "tipo_invalido" });
   }
 
@@ -139,7 +139,7 @@ app.get("/categorias", autenticar, async (req, res) => {
 app.post("/categorias", autenticar, async (req, res) => {
   const { nome, tipo } = req.body || {};
   if (!nome || !String(nome).trim()) return res.status(400).json({ erro: "nome_obrigatorio" });
-  if (!tipo || !["entrada", "saida"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
+  if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
 
   try {
     const r = await db.query(
@@ -169,12 +169,12 @@ app.get("/categorias/:id", autenticar, async (req, res) => {
 });
 
 app.get("/lancamentos", autenticar, async (req, res) => {
-  const { inicio, fim } = req.query;
+  const { inicio, fim, tipo } = req.query;
 
   const params = [req.usuario.id];
   let sql = `
     SELECT l.id, l.conta_id, l.categoria_id, l.tipo, l.valor_centavos, l.descricao, l.data_ocorrencia, l.criado_em,
-           c.nome AS conta_nome, cat.nome AS categoria_nome
+           l.origem_lancamento_id, c.nome AS conta_nome, cat.nome AS categoria_nome
     FROM lancamentos l
     LEFT JOIN contas c ON c.id = l.conta_id
     LEFT JOIN categorias cat ON cat.id = l.categoria_id
@@ -190,6 +190,11 @@ app.get("/lancamentos", autenticar, async (req, res) => {
     sql += ` AND l.data_ocorrencia <= $${params.length}`;
   }
 
+  if (tipo && ["entrada", "saida", "reserva"].includes(tipo)) {
+    params.push(tipo);
+    sql += ` AND l.tipo = $${params.length}`;
+  }
+
   sql += " ORDER BY l.data_ocorrencia DESC, l.criado_em DESC";
 
   const r = await db.query(sql, params);
@@ -203,6 +208,7 @@ app.get("/lancamentos", autenticar, async (req, res) => {
     descricao: l.descricao,
     data_ocorrencia: l.data_ocorrencia,
     criado_em: l.criado_em,
+    origem_lancamento_id: l.origem_lancamento_id || null,
     conta: l.conta_nome ? { nome: l.conta_nome } : null,
     categoria: l.categoria_nome ? { nome: l.categoria_nome } : null,
   }));
@@ -215,8 +221,8 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
   const { id } = req.params;
   try {
     const r = await db.query(
-      `SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, criado_em
-       FROM lancamentos WHERE id = $1 AND usuario_id = $2`,
+       `SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, criado_em
+         FROM lancamentos WHERE id = $1 AND usuario_id = $2`,
       [id, req.usuario.id]
     );
 
@@ -232,7 +238,7 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
 });
 
 app.post("/lancamentos", autenticar, async (req, res) => {
-  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia } = req.body || {};
+  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id } = req.body || {};
 
   if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
   if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
@@ -253,10 +259,19 @@ app.post("/lancamentos", autenticar, async (req, res) => {
     if (cat.rowCount === 0) return res.status(403).json({ erro: "categoria_nao_permitida" });
   }
 
+  if (origem_lancamento_id) {
+    // must reference an existing entrada belonging to the user
+    const rOrig = await db.query("SELECT id, tipo, usuario_id FROM lancamentos WHERE id = $1", [origem_lancamento_id]);
+    if (rOrig.rowCount === 0) return res.status(400).json({ erro: "origem_invalida" });
+    const o = rOrig.rows[0];
+    if (String(o.usuario_id) !== String(req.usuario.id)) return res.status(403).json({ erro: "origem_nao_permitida" });
+    if (o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
+  }
+
   const r = await db.query(
-    `INSERT INTO lancamentos (usuario_id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
-     RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, criado_em`,
+    `INSERT INTO lancamentos (usuario_id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, criado_em`,
     [
       req.usuario.id,
       conta_id,
@@ -265,11 +280,14 @@ app.post("/lancamentos", autenticar, async (req, res) => {
       valor_centavos,
       descricao || null,
       data_ocorrencia,
+      origem_lancamento_id || null,
     ]
   );
 
   const lancamento = r.rows[0];
   lancamento.valor_centavos = Number(lancamento.valor_centavos);
+  lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
+  lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
 
   return res.status(201).json({ lancamento });
 });
@@ -317,7 +335,7 @@ app.put("/categorias/:id", autenticar, async (req, res) => {
   const { nome, tipo } = req.body || {};
 
   if (!nome || !String(nome).trim()) return res.status(400).json({ erro: "nome_obrigatorio" });
-  if (!tipo || !["entrada", "saida"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
+  if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
 
   try {
     const r = await db.query(
@@ -349,7 +367,7 @@ app.delete("/categorias/:id", autenticar, async (req, res) => {
 // Atualizar lancamento
 app.put("/lancamentos/:id", autenticar, async (req, res) => {
   const { id } = req.params;
-  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia } = req.body || {};
+  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id } = req.body || {};
 
   if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
   if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
@@ -364,18 +382,27 @@ app.put("/lancamentos/:id", autenticar, async (req, res) => {
     if (cat.rowCount === 0) return res.status(403).json({ erro: "categoria_nao_permitida" });
   }
 
+  if (origem_lancamento_id) {
+    const rOrig = await db.query("SELECT id, tipo, usuario_id FROM lancamentos WHERE id = $1", [origem_lancamento_id]);
+    if (rOrig.rowCount === 0) return res.status(400).json({ erro: "origem_invalida" });
+    const o = rOrig.rows[0];
+    if (String(o.usuario_id) !== String(req.usuario.id)) return res.status(403).json({ erro: "origem_nao_permitida" });
+    if (o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
+  }
+
   try {
     const r = await db.query(
-      `UPDATE lancamentos SET conta_id=$1, categoria_id=$2, tipo=$3, valor_centavos=$4, descricao=$5, data_ocorrencia=$6
+      `UPDATE lancamentos SET conta_id=$1, categoria_id=$2, tipo=$3, valor_centavos=$4, descricao=$5, data_ocorrencia=$6, origem_lancamento_id=$9
        WHERE id = $7 AND usuario_id = $8
-       RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, criado_em`,
-      [conta_id, categoria_id || null, tipo, valor_centavos, descricao || null, data_ocorrencia, id, req.usuario.id]
+       RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, criado_em`,
+      [conta_id, categoria_id || null, tipo, valor_centavos, descricao || null, data_ocorrencia, id, req.usuario.id, origem_lancamento_id || null]
     );
 
     if (r.rowCount === 0) return res.status(403).json({ erro: "lancamento_nao_permitido" });
 
     const lancamento = r.rows[0];
     lancamento.valor_centavos = Number(lancamento.valor_centavos);
+    lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
 
     return res.json({ lancamento });
   } catch (e) {
