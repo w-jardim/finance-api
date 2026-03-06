@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS categorias (
   id BIGINT PRIMARY KEY DEFAULT nextval('seq_categorias_id'),
   usuario_id BIGINT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
   nome TEXT NOT NULL,
-  tipo TEXT NOT NULL CHECK (tipo IN ('entrada','saida')),
+  tipo TEXT NOT NULL CHECK (tipo IN ('entrada','saida','reserva')),
   criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (usuario_id, nome, tipo)
 );
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS lancamentos (
   usuario_id BIGINT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
   conta_id BIGINT NOT NULL REFERENCES contas(id) ON DELETE RESTRICT,
   categoria_id BIGINT REFERENCES categorias(id) ON DELETE SET NULL,
-  tipo TEXT NOT NULL CHECK (tipo IN ('entrada','saida')),
+  tipo TEXT NOT NULL CHECK (tipo IN ('entrada','saida','reserva')),
   valor_centavos BIGINT NOT NULL CHECK (valor_centavos > 0),
   descricao TEXT,
   data_ocorrencia DATE NOT NULL,
