@@ -290,12 +290,13 @@ app.post("/lancamentos", autenticar, async (req, res) => {
   }
 
   if (origem_lancamento_id) {
-    // must reference an existing entrada belonging to the user
     const rOrig = await db.query("SELECT id, tipo, usuario_id FROM lancamentos WHERE id = $1", [origem_lancamento_id]);
     if (rOrig.rowCount === 0) return res.status(400).json({ erro: "origem_invalida" });
     const o = rOrig.rows[0];
     if (String(o.usuario_id) !== String(req.usuario.id)) return res.status(403).json({ erro: "origem_nao_permitida" });
-    if (o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
+    // Transferência: entrada referencia uma saída; Reserva: referencia uma entrada
+    if (tipo === 'entrada' && o.tipo !== 'saida') return res.status(400).json({ erro: "origem_deve_ser_saida" });
+    if (tipo !== 'entrada' && o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
   }
   // recebido and separado validation based on tipo
   const recebidoVal = typeof recebido === 'boolean' ? recebido : false;
@@ -429,7 +430,8 @@ app.put("/lancamentos/:id", autenticar, async (req, res) => {
     if (rOrig.rowCount === 0) return res.status(400).json({ erro: "origem_invalida" });
     const o = rOrig.rows[0];
     if (String(o.usuario_id) !== String(req.usuario.id)) return res.status(403).json({ erro: "origem_nao_permitida" });
-    if (o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
+    if (tipo === 'entrada' && o.tipo !== 'saida') return res.status(400).json({ erro: "origem_deve_ser_saida" });
+    if (tipo !== 'entrada' && o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
   }
 
   // validate recebido/separado applicability
