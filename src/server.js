@@ -174,7 +174,7 @@ app.get("/lancamentos", autenticar, async (req, res) => {
   const params = [req.usuario.id];
   let sql = `
         SELECT l.id, l.conta_id, l.categoria_id, l.tipo, l.valor_centavos, l.descricao, l.data_ocorrencia, l.criado_em,
-          l.origem_lancamento_id, l.pago, c.nome AS conta_nome, cat.nome AS categoria_nome
+          l.origem_lancamento_id, l.pago, l.recebido, l.separado, c.nome AS conta_nome, cat.nome AS categoria_nome
     FROM lancamentos l
     LEFT JOIN contas c ON c.id = l.conta_id
     LEFT JOIN categorias cat ON cat.id = l.categoria_id
@@ -201,6 +201,22 @@ app.get("/lancamentos", autenticar, async (req, res) => {
     sql += ` AND l.pago = $${params.length}`;
   }
 
+  // filtro por recebido (aplica-se a entradas)
+  const recebido = req.query.recebido;
+  if (typeof recebido !== 'undefined') {
+    if (recebido !== 'true' && recebido !== 'false') return res.status(400).json({ erro: 'recebido_invalido' });
+    params.push(recebido === 'true');
+    sql += ` AND l.recebido = $${params.length}`;
+  }
+
+  // filtro por separado (aplica-se a reservas)
+  const separado = req.query.separado;
+  if (typeof separado !== 'undefined') {
+    if (separado !== 'true' && separado !== 'false') return res.status(400).json({ erro: 'separado_invalido' });
+    params.push(separado === 'true');
+    sql += ` AND l.separado = $${params.length}`;
+  }
+
   sql += " ORDER BY l.data_ocorrencia DESC, l.criado_em DESC";
 
   const r = await db.query(sql, params);
@@ -216,6 +232,8 @@ app.get("/lancamentos", autenticar, async (req, res) => {
     criado_em: l.criado_em,
     origem_lancamento_id: l.origem_lancamento_id || null,
     pago: l.pago === true,
+    recebido: l.recebido === true,
+    separado: l.separado === true,
     conta: l.conta_nome ? { nome: l.conta_nome } : null,
     categoria: l.categoria_nome ? { nome: l.categoria_nome } : null,
   }));
@@ -228,8 +246,8 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
   const { id } = req.params;
   try {
     const r = await db.query(
-       `SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, criado_em
-         FROM lancamentos WHERE id = $1 AND usuario_id = $2`,
+         `SELECT id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, recebido, separado, criado_em
+           FROM lancamentos WHERE id = $1 AND usuario_id = $2`,
       [id, req.usuario.id]
     );
 
@@ -238,8 +256,10 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
     const lancamento = r.rows[0];
     lancamento.valor_centavos = Number(lancamento.valor_centavos);
 
-    // normalize pago
+    // normalize pago/recebido/separado
     lancamento.pago = lancamento.pago === true;
+    lancamento.recebido = lancamento.recebido === true;
+    lancamento.separado = lancamento.separado === true;
 
     return res.json({ lancamento });
   } catch (e) {
@@ -248,7 +268,7 @@ app.get("/lancamentos/:id", autenticar, async (req, res) => {
 });
 
 app.post("/lancamentos", autenticar, async (req, res) => {
-  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago } = req.body || {};
+  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, recebido, separado } = req.body || {};
 
   if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
   if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
@@ -277,13 +297,18 @@ app.post("/lancamentos", autenticar, async (req, res) => {
     if (String(o.usuario_id) !== String(req.usuario.id)) return res.status(403).json({ erro: "origem_nao_permitida" });
     if (o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
   }
+  // recebido and separado validation based on tipo
+  const recebidoVal = typeof recebido === 'boolean' ? recebido : false;
+  const separadoVal = typeof separado === 'boolean' ? separado : false;
+  if (recebidoVal && tipo !== 'entrada') return res.status(400).json({ erro: 'recebido_nao_aplicavel' });
+  if (separadoVal && tipo !== 'reserva') return res.status(400).json({ erro: 'separado_nao_aplicavel' });
 
   const pagoVal = typeof pago === 'boolean' ? pago : false;
 
   const r = await db.query(
-    `INSERT INTO lancamentos (usuario_id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, criado_em`,
+    `INSERT INTO lancamentos (usuario_id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, recebido, separado)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, recebido, separado, criado_em`,
     [
       req.usuario.id,
       conta_id,
@@ -294,6 +319,8 @@ app.post("/lancamentos", autenticar, async (req, res) => {
       data_ocorrencia,
       origem_lancamento_id || null,
       pagoVal,
+      recebidoVal,
+      separadoVal,
     ]
   );
 
@@ -301,6 +328,8 @@ app.post("/lancamentos", autenticar, async (req, res) => {
   lancamento.valor_centavos = Number(lancamento.valor_centavos);
   lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
   lancamento.pago = lancamento.pago === true;
+  lancamento.recebido = lancamento.recebido === true;
+  lancamento.separado = lancamento.separado === true;
 
   return res.status(201).json({ lancamento });
 });
@@ -380,7 +409,7 @@ app.delete("/categorias/:id", autenticar, async (req, res) => {
 // Atualizar lancamento
 app.put("/lancamentos/:id", autenticar, async (req, res) => {
   const { id } = req.params;
-  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id } = req.body || {};
+  const { conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, recebido, separado } = req.body || {};
 
   if (!conta_id) return res.status(400).json({ erro: "conta_id_obrigatorio" });
   if (!tipo || !["entrada", "saida", "reserva"].includes(tipo)) return res.status(400).json({ erro: "tipo_invalido" });
@@ -403,12 +432,21 @@ app.put("/lancamentos/:id", autenticar, async (req, res) => {
     if (o.tipo !== 'entrada') return res.status(400).json({ erro: "origem_nao_entrada" });
   }
 
+  // validate recebido/separado applicability
+  const recebidoVal = typeof recebido === 'boolean' ? recebido : null;
+  const separadoVal = typeof separado === 'boolean' ? separado : null;
+  if (recebidoVal === true && tipo && tipo !== 'entrada') return res.status(400).json({ erro: 'recebido_nao_aplicavel' });
+  if (separadoVal === true && tipo && tipo !== 'reserva') return res.status(400).json({ erro: 'separado_nao_aplicavel' });
+
+  const pagoVal = typeof pago === 'boolean' ? pago : null;
+
   try {
     const r = await db.query(
-      `UPDATE lancamentos SET conta_id=$1, categoria_id=$2, tipo=$3, valor_centavos=$4, descricao=$5, data_ocorrencia=$6, origem_lancamento_id=$9
-       WHERE id = $7 AND usuario_id = $8
-      RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, criado_em`,
-      [conta_id, categoria_id || null, tipo, valor_centavos, descricao || null, data_ocorrencia, id, req.usuario.id, origem_lancamento_id || null]
+      `UPDATE lancamentos SET conta_id=COALESCE($1,conta_id), categoria_id=COALESCE($2,categoria_id), tipo=COALESCE($3,tipo), valor_centavos=COALESCE($4,valor_centavos), descricao=COALESCE($5,descricao), data_ocorrencia=COALESCE($6,data_ocorrencia), origem_lancamento_id=COALESCE($7,origem_lancamento_id),
+       pago=COALESCE($8,pago), recebido=COALESCE($9,recebido), separado=COALESCE($10,separado)
+       WHERE id = $11 AND usuario_id = $12
+      RETURNING id, conta_id, categoria_id, tipo, valor_centavos, descricao, data_ocorrencia, origem_lancamento_id, pago, recebido, separado, criado_em`,
+      [conta_id, categoria_id || null, tipo, valor_centavos, descricao || null, data_ocorrencia, origem_lancamento_id || null, pagoVal, recebidoVal, separadoVal, id, req.usuario.id]
     );
 
     if (r.rowCount === 0) return res.status(403).json({ erro: "lancamento_nao_permitido" });
@@ -418,6 +456,8 @@ app.put("/lancamentos/:id", autenticar, async (req, res) => {
     lancamento.origem_lancamento_id = lancamento.origem_lancamento_id || null;
 
     lancamento.pago = lancamento.pago === true;
+    lancamento.recebido = lancamento.recebido === true;
+    lancamento.separado = lancamento.separado === true;
 
     return res.json({ lancamento });
   } catch (e) {
@@ -611,7 +651,7 @@ app.patch('/lancamentos/:id/pagar', autenticar, async (req, res) => {
   const { id } = req.params;
   try {
     const r = await db.query(
-      'UPDATE lancamentos SET pago = true WHERE id = $1 AND usuario_id = $2 RETURNING id, pago',
+      "UPDATE lancamentos SET pago = true WHERE id = $1 AND usuario_id = $2 AND tipo = 'saida' RETURNING id, pago",
       [id, req.usuario.id]
     );
     if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido' });
@@ -626,10 +666,70 @@ app.patch('/lancamentos/:id/estornar', autenticar, async (req, res) => {
   const { id } = req.params;
   try {
     const r = await db.query(
-      'UPDATE lancamentos SET pago = false WHERE id = $1 AND usuario_id = $2 RETURNING id, pago',
+      "UPDATE lancamentos SET pago = false WHERE id = $1 AND usuario_id = $2 AND tipo = 'saida' RETURNING id, pago",
       [id, req.usuario.id]
     );
     if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido' });
+    return res.json({ lancamento: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: 'erro_interno' });
+  }
+});
+
+// Marcar entrada como recebido
+app.patch('/lancamentos/:id/receber', autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      "UPDATE lancamentos SET recebido = true WHERE id = $1 AND usuario_id = $2 AND tipo = 'entrada' RETURNING id, recebido",
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido_ou_nao_entrada' });
+    return res.json({ lancamento: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: 'erro_interno' });
+  }
+});
+
+// Desmarcar recebido
+app.patch('/lancamentos/:id/cancelar-recebimento', autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      "UPDATE lancamentos SET recebido = false WHERE id = $1 AND usuario_id = $2 AND tipo = 'entrada' RETURNING id, recebido",
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido_ou_nao_entrada' });
+    return res.json({ lancamento: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: 'erro_interno' });
+  }
+});
+
+// Marcar reserva como separado
+app.patch('/lancamentos/:id/separar', autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      "UPDATE lancamentos SET separado = true WHERE id = $1 AND usuario_id = $2 AND tipo = 'reserva' RETURNING id, separado",
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido_ou_nao_reserva' });
+    return res.json({ lancamento: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ erro: 'erro_interno' });
+  }
+});
+
+// Desmarcar separado
+app.patch('/lancamentos/:id/desseparar', autenticar, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const r = await db.query(
+      "UPDATE lancamentos SET separado = false WHERE id = $1 AND usuario_id = $2 AND tipo = 'reserva' RETURNING id, separado",
+      [id, req.usuario.id]
+    );
+    if (r.rowCount === 0) return res.status(403).json({ erro: 'lancamento_nao_permitido_ou_nao_reserva' });
     return res.json({ lancamento: r.rows[0] });
   } catch (e) {
     return res.status(500).json({ erro: 'erro_interno' });
